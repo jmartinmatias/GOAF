@@ -6,41 +6,34 @@ from example_functions import *
 # Initialize the registry
 registry = FunctionRegistry()
 
-# Either use decorators OR register with a loop, not both
-# Option 1: Use decorators (remove the loop)
-@registry.register
-def add(a, b):
-    """Add two numbers together."""
-    return a + b
-
-@registry.register
-def multiply(a, b):
-    """Multiply two numbers together."""
-    return a * b
-
-@registry.register
-def greet(name):
-    """Greet a person by name."""
-    return f"Hello, {name}!"
-
-# Register additional functions
+# Register a variety of functions
+registry.register(add)
 registry.register(subtract)
+registry.register(multiply)
 registry.register(divide)
+registry.register(greet)
 registry.register(count_words)
 registry.register(is_palindrome)
 registry.register(capitalize_words)
 registry.register(fetch_webpage)
 registry.register(send_email)
 registry.register(calculate_average)
-
+registry.register(filter_even_numbers)
+registry.register(sort_numbers)
+registry.register(find_max)
+registry.register(find_min)
+registry.register(read_file_lines)
+registry.register(write_to_file)
+registry.register(parse_json)
+registry.register(format_date)
+registry.register(check_url_status)
 
 # Streamlit App
 st.title("Function Registry Dashboard")
 
 # Sidebar menu
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Select page", ["Functions", "Search", "Semantic Search", "Execute"])
-
+page = st.sidebar.radio("Select page", ["Functions", "Search", "Code-Based Search", "Execute"])
 
 if page == "Functions":
     st.header("Registered Functions")
@@ -51,11 +44,22 @@ if page == "Functions":
         
         st.subheader(f"{func_name}{metadata['signature']}")
         st.write(metadata['docstring'])
+        
+        # Display code patterns if available
+        if "code_patterns" in metadata:
+            patterns = metadata["code_patterns"]
+            if patterns:
+                pattern_text = ", ".join([p.replace("_", " ").title() for p, v in patterns.items() if v])
+                if pattern_text:
+                    st.caption(f"Code characteristics: {pattern_text}")
+                    
         st.text(f"Called {stats['calls']} times")
         st.markdown("---")
         
 elif page == "Search":
-    st.header("Search Functions")
+    st.header("Keyword Search")
+    st.write("Find functions based on name or description")
+    
     query = st.text_input("Enter search term")
     
     if query:
@@ -70,6 +74,58 @@ elif page == "Search":
         else:
             st.warning("No functions found matching your query")
             
+elif page == "Code-Based Search":
+    st.header("Code-Based Semantic Function Search")
+    st.write("Find functions based on their implementation, not just descriptions")
+    
+    query = st.text_input("What functionality are you looking for?")
+    
+    if query:
+        results = registry.semantic_search(query)
+        if results:
+            st.success(f"Found {len(results)} semantically related functions")
+            for result in results:
+                func_name = result["name"]
+                similarity = result["similarity"]
+                metadata = result["metadata"]
+                
+                st.subheader(f"{func_name}{metadata['signature']}")
+                st.write(metadata['docstring'])
+                
+                # Show code patterns if available
+                if "code_patterns" in metadata:
+                    patterns = metadata["code_patterns"]
+                    if patterns:
+                        st.write("**Code Patterns:**")
+                        for pattern, value in patterns.items():
+                            if value:
+                                st.write(f"- {pattern.replace('_', ' ').title()}")
+                
+                # Visual indicators for match quality
+                st.progress(similarity)
+                
+                # Indicate if match was boosted by code analysis
+                if result.get("matched_on_code"):
+                    st.info("✓ Matched based on code implementation patterns")
+                    
+                st.text(f"Similarity: {similarity:.2f}")
+                st.markdown("---")
+        else:
+            st.warning("No functions found matching your query")
+            
+            # Suggest queries
+            st.subheader("Try these example queries:")
+            example_queries = [
+                "calculate numeric statistics",
+                "manipulate strings and text",
+                "filter or process lists",
+                "read or write files",
+                "handle network operations"
+            ]
+            for query in example_queries:
+                if st.button(query):
+                    st.experimental_rerun()
+                    
 elif page == "Execute":
     st.header("Execute Function")
     
@@ -81,6 +137,14 @@ elif page == "Execute":
         st.subheader(f"{selected_func}{metadata['signature']}")
         st.write(metadata['docstring'])
         
+        # Show code patterns for the selected function
+        if "code_patterns" in metadata:
+            patterns = metadata["code_patterns"]
+            if patterns:
+                pattern_text = ", ".join([p.replace("_", " ").title() for p, v in patterns.items() if v])
+                if pattern_text:
+                    st.caption(f"Code characteristics: {pattern_text}")
+        
         # Create input fields for function parameters
         params = {}
         for param_name in metadata['parameters']:
@@ -90,11 +154,27 @@ elif page == "Execute":
             # Convert string inputs to appropriate types (simple version)
             processed_params = {}
             for name, value in params.items():
+                if not value:  # Skip empty values
+                    continue
                 try:
                     # Try to convert to number if possible
-                    processed_params[name] = float(value) if '.' in value else int(value)
+                    if value.lower() == 'true':
+                        processed_params[name] = True
+                    elif value.lower() == 'false':
+                        processed_params[name] = False
+                    elif '.' in value and value.replace('.', '').isdigit():
+                        processed_params[name] = float(value)
+                    elif value.isdigit():
+                        processed_params[name] = int(value)
+                    elif value.startswith('[') and value.endswith(']'):
+                        # Handle simple list input
+                        items = value[1:-1].split(',')
+                        processed_params[name] = [item.strip() for item in items]
+                    else:
+                        # Keep as string if not a number
+                        processed_params[name] = value
                 except ValueError:
-                    # Keep as string if not a number
+                    # Keep as string if conversion fails
                     processed_params[name] = value
                     
             # Execute the function
@@ -109,36 +189,12 @@ elif page == "Execute":
             else:
                 st.error(f"Error: {result['error']}")
 
-elif page == "Semantic Search":
-    st.header("Semantic Function Search")
-    st.write("Find functions based on their meaning, not just keywords")
-    
-    query = st.text_input("What are you trying to do?")
-    
-    if query:
-        results = registry.semantic_search(query)
-        if results:
-            st.success(f"Found {len(results)} semantically related functions")
-            for result in results:
-                func_name = result["name"]
-                similarity = result["similarity"]
-                metadata = result["metadata"]
-                
-                st.subheader(f"{func_name}{metadata['signature']}")
-                st.write(metadata['docstring'])
-                st.progress(similarity)  # Show similarity as a progress bar
-                st.text(f"Similarity: {similarity:.2f}")
-                st.markdown("---")
-        else:
-            st.warning("No functions found matching your query")
-
-
 # Display app info in the sidebar
 st.sidebar.markdown("---")
 st.sidebar.info(
     """
     **Function Registry Dashboard**
     
-    A simple demo of the function registry system.
+    A code-aware function registry system that understands implementation patterns.
     """
 )

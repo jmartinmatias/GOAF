@@ -1,7 +1,7 @@
 #registry.py
 import inspect
 import time
-from typing import Dict, Any, Callable, List, Optional
+from typing import Dict, Any, Callable, List, Optional, Union
 import logging
 import numpy as np
 from src.core.vectorizer import FunctionVectorizer
@@ -49,6 +49,11 @@ class FunctionRegistry:
             "registered_at": time.time()
         }
 
+        # Add code analysis patterns to metadata
+        code_patterns = self.vectorizer.analyze_code_patterns(func)
+        self.metadata[func_name]["code_patterns"] = code_patterns
+
+        # Vectorize with focus on implementation
         try:
             vector = self.vectorizer.vectorize_function(func)
             self.vectors[func_name] = vector
@@ -171,7 +176,7 @@ class FunctionRegistry:
             List of function names
         """
         return list(self.functions.keys())
-
+    
     def semantic_search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """
         Search for functions semantically similar to a natural language query.
@@ -183,9 +188,14 @@ class FunctionRegistry:
         Returns:
             List of dictionaries containing matching function info with similarity scores
         """
+        # Extract potential code patterns from the query
+        query_patterns = self._extract_patterns_from_query(query)
+        
+        # Get initial vector-based matches
         if not self.vectors:
             logger.warning("No function vectors available. Using keyword search instead.")
-            return [{"name": name, "similarity": 1.0} for name in self.search(query)]
+            return [{"name": name, "similarity": 1.0, "metadata": self.metadata[name]} 
+                   for name in self.search(query)]
         
         try:
             # Vectorize the query
@@ -194,19 +204,33 @@ class FunctionRegistry:
             # Calculate similarity with all function vectors
             similarities = []
             for func_name, vector in self.vectors.items():
-                similarity = self.vectorizer.calculate_similarity(query_vector, vector)
-                similarities.append((func_name, similarity))
+                # Base similarity from vectors
+                vector_similarity = self.vectorizer.calculate_similarity(query_vector, vector)
+                
+                # Boost similarity for matching code patterns
+                pattern_boost = 0.0
+                if query_patterns and "code_patterns" in self.metadata[func_name]:
+                    func_patterns = self.metadata[func_name]["code_patterns"]
+                    for pattern, wanted in query_patterns.items():
+                        if pattern in func_patterns and func_patterns[pattern] == wanted:
+                            pattern_boost += 0.1  # Boost for each matching pattern
+                
+                # Combined similarity score
+                adjusted_similarity = min(1.0, vector_similarity + pattern_boost)
+                
+                similarities.append((func_name, adjusted_similarity, vector_similarity < adjusted_similarity))
             
             # Sort by similarity (highest first)
             similarities.sort(key=lambda x: x[1], reverse=True)
             
             # Return top k results with metadata
             results = []
-            for func_name, similarity in similarities[:top_k]:
+            for func_name, similarity, matched_on_code in similarities[:top_k]:
                 results.append({
                     "name": func_name,
                     "similarity": similarity,
-                    "metadata": self.metadata[func_name]
+                    "metadata": self.metadata[func_name],
+                    "matched_on_code": matched_on_code
                 })
             
             return results
@@ -214,6 +238,45 @@ class FunctionRegistry:
         except Exception as e:
             logger.error(f"Error in semantic search: {str(e)}")
             return []
+    
+    def _extract_patterns_from_query(self, query: str) -> Dict[str, bool]:
+        """
+        Extract likely code patterns from a natural language query.
+        
+        Args:
+            query: The natural language query
+            
+        Returns:
+            Dictionary of likely code patterns based on query
+        """
+        patterns = {}
+        
+        # Look for transformation hints
+        if any(term in query.lower() for term in ["calculate", "compute", "add", "sum", "multiply"]):
+            patterns["transforms_data"] = True
+            
+        # Look for filtering hints
+        if any(term in query.lower() for term in ["filter", "find", "where", "condition"]):
+            patterns["filters_data"] = True
+        
+        # Look for I/O hints
+        if any(term in query.lower() for term in ["file", "read", "write", "save", "load"]):
+            patterns["performs_io"] = True
+        
+        # Look for error handling hints
+        if any(term in query.lower() for term in ["error", "exception", "handle", "try"]):
+            patterns["handles_errors"] = True
+            
+        # Look for string processing hints
+        if any(term in query.lower() for term in ["string", "text", "format", "concat"]):
+            patterns["manipulates_strings"] = True
+            
+        # Look for list processing hints
+        if any(term in query.lower() for term in ["list", "array", "collection", "items"]):
+            patterns["uses_functional_patterns"] = True
+            
+        return patterns
+
 
 # Decorator for easy registration
 def register_function(registry):
@@ -230,4 +293,3 @@ def register_function(registry):
         registry.register(func)
         return func
     return decorator
-

@@ -242,7 +242,7 @@ class FunctionVectorizer:
             logger.error(f"Error analyzing code patterns: {str(e)}")
             return {}
     
-    def vectorize_function(self, func: Callable) -> np.ndarray:
+    def vectorize_function(self, func: Callable) -> Dict[str, Any]:
         """
         Create a vector embedding focused on function implementation.
         
@@ -250,26 +250,56 @@ class FunctionVectorizer:
             func: The function to vectorize
             
         Returns:
-            A numpy array containing the vector embedding
+            A dictionary containing the vector and default metadata
         """
-        if self.model is None:
-            # Fallback to simple bag-of-words if no model
-            return self._simple_embedding(self.get_function_text(func))
+        try:
+            if self.model is None:
+                # Fallback to simple bag-of-words if no model
+                vector = self._simple_embedding(self.get_function_text(func))
+            else:    
+                # Get code-focused representation
+                code_representation = self.get_function_code_representation(func)
+                
+                # Get basic metadata (reduced weight compared to code)
+                metadata_representation = f"""
+                Function Name: {func.__name__}
+                Parameters: {', '.join(inspect.signature(func).parameters.keys())}
+                """
+                
+                # Give higher weight to code representation (3:1 ratio)
+                combined_representation = f"{code_representation}\n{code_representation}\n{code_representation}\n{metadata_representation}"
+                
+                # Vectorize the combined representation
+                vector = self.model.encode(combined_representation)
             
-        # Get code-focused representation
-        code_representation = self.get_function_code_representation(func)
-        
-        # Get basic metadata (reduced weight compared to code)
-        metadata_representation = f"""
-        Function Name: {func.__name__}
-        Parameters: {', '.join(inspect.signature(func).parameters.keys())}
-        """
-        
-        # Give higher weight to code representation (3:1 ratio)
-        combined_representation = f"{code_representation}\n{code_representation}\n{code_representation}\n{metadata_representation}"
-        
-        # Vectorize the combined representation
-        return self.model.encode(combined_representation)
+            # Return in dictionary format compatible with AlgorithmicVectorizer
+            return {
+                "vector": vector,
+                "algorithmic_analysis": {
+                    "algorithm_patterns": [],
+                    "complexity": {"time_complexity": "O(1)", "space_complexity": "O(1)"},
+                    "data_flows": {"data_structures_used": [], "input_transformations": []},
+                    "control_flow": {"if_statements": 0, "loops": 0, "try_blocks": 0, "nested_depth": 0},
+                    "io_relationship": {"output_determinism": "deterministic", "side_effects": [], "input_validation": False},
+                    "block_purposes": []
+                },
+                "algorithmic_description": f"Function '{func.__name__}' with unknown algorithmic properties."
+            }
+        except Exception as e:
+            logger.warning(f"Error in vectorization: {str(e)}")
+            # Return default structure
+            return {
+                "vector": np.zeros(384),  # Default size for embedding models
+                "algorithmic_analysis": {
+                    "algorithm_patterns": [],
+                    "complexity": {"time_complexity": "O(1)", "space_complexity": "O(1)"},
+                    "data_flows": {"data_structures_used": [], "input_transformations": []},
+                    "control_flow": {"if_statements": 0, "loops": 0, "try_blocks": 0, "nested_depth": 0},
+                    "io_relationship": {"output_determinism": "deterministic", "side_effects": [], "input_validation": False},
+                    "block_purposes": []
+                },
+                "algorithmic_description": f"Function '{func.__name__}' with unknown algorithmic properties."
+            }
     
     def vectorize_query(self, query: str) -> np.ndarray:
         """
@@ -897,30 +927,52 @@ class AlgorithmicVectorizer(FunctionVectorizer):
         Returns:
             A dictionary with both the embedding vector and algorithmic analysis
         """
-        # Get standard code embedding
-        code_embedding = super().vectorize_function(func)
+        try:
+            # Get algorithmic analysis
+            algorithmic_analysis = self.analyze_algorithmic_purpose(func)
+            
+            # Create enhanced textual representation for embedding
+            algorithmic_text = self._generate_algorithmic_description(func, algorithmic_analysis)
+            
+            if self.model is None:
+                # Fallback to simple bag-of-words if no model
+                combined_embedding = self._simple_embedding(algorithmic_text)
+            else:
+                # Get parent class result - now returns a dictionary
+                parent_result = super().vectorize_function(func)
+                code_embedding = parent_result["vector"]  # Extract the vector from the parent result
+                
+                # Create algorithm-focused embedding
+                algorithmic_embedding = self.model.encode(algorithmic_text)
+                
+                # Combine embeddings (weighted more toward algorithmic understanding)
+                combined_embedding = 0.3 * code_embedding + 0.7 * algorithmic_embedding
+                
+                # Normalize the combined embedding
+                combined_embedding = combined_embedding / np.linalg.norm(combined_embedding)
+            
+            # Return the combined result
+            return {
+                "vector": combined_embedding,
+                "algorithmic_analysis": algorithmic_analysis,
+                "algorithmic_description": algorithmic_text
+            }
+        except Exception as e:
+            logger.warning(f"Error in algorithmic vectorization: {str(e)}")
+            # Return a default structure with reasonable defaults
+            return {
+                "vector": np.zeros(384),  # Default size for embedding models
+                "algorithmic_analysis": {
+                    "algorithm_patterns": [],
+                    "complexity": {"time_complexity": "O(1)", "space_complexity": "O(1)"},
+                    "data_flows": {"data_structures_used": [], "input_transformations": []},
+                    "control_flow": {"if_statements": 0, "loops": 0, "try_blocks": 0, "nested_depth": 0},
+                    "io_relationship": {"output_determinism": "deterministic", "side_effects": [], "input_validation": False},
+                    "block_purposes": []
+                },
+                "algorithmic_description": f"Function '{func.__name__}' with unknown algorithmic properties."
+            }
         
-        # Get algorithmic analysis
-        algorithmic_analysis = self.analyze_algorithmic_purpose(func)
-        
-        # Create enhanced textual representation for embedding
-        algorithmic_text = self._generate_algorithmic_description(func, algorithmic_analysis)
-        
-        # Create algorithm-focused embedding
-        algorithmic_embedding = self.model.encode(algorithmic_text)
-        
-        # Combine embeddings (weighted more toward algorithmic understanding)
-        combined_embedding = 0.3 * code_embedding + 0.7 * algorithmic_embedding
-        
-        # Normalize the combined embedding
-        combined_embedding = combined_embedding / np.linalg.norm(combined_embedding)
-        
-        return {
-            "vector": combined_embedding,
-            "algorithmic_analysis": algorithmic_analysis,
-            "algorithmic_description": algorithmic_text
-        }
-    
     def _generate_algorithmic_description(self, func: Callable, analysis: Dict[str, Any]) -> str:
         """Generate a detailed algorithmic description from the analysis."""
         # Get function basics

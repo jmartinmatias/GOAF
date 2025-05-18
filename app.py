@@ -1,3 +1,33 @@
+# Fix for PyTorch compatibility with Streamlit hot-reload
+import sys
+import types
+
+# Create a dummy module to handle PyTorch's custom classes
+class DummyModule(types.ModuleType):
+    def __init__(self, name):
+        super().__init__(name)
+        self.__path__ = []  # Make this look like a package
+    
+    @property
+    def _path(self):
+        return []  # Return empty list instead of raising an error
+
+# Only patch if torch is being used
+try:
+    import torch
+    if not isinstance(sys.modules.get('torch._classes'), DummyModule):
+        # Create and register our dummy module for torch._classes
+        dummy_module = DummyModule('torch._classes')
+        sys.modules['torch._classes'] = dummy_module
+        # Also set up the path property that Streamlit tries to access
+        class DummyPath:
+            @property
+            def _path(self):
+                return []
+        dummy_module.__path__ = DummyPath()
+except ImportError:
+    pass  # Torch not installed, nothing to patch
+
 #app.py
 import streamlit as st
 import inspect
@@ -7,6 +37,11 @@ import matplotlib.pyplot as plt
 import plotly.express as px
 from src.core.registry import FunctionRegistry
 from example_functions import *
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Set page configuration
 st.set_page_config(
@@ -63,7 +98,15 @@ st.markdown("""
 # Initialize the registry
 @st.cache_resource
 def get_registry():
-    registry = FunctionRegistry()
+    from src.core.semantic_analyzer import GeminiAnalyzer
+    from src.core.vectorizer import AlgorithmicVectorizer
+    
+    # Initialize analyzers
+    semantic_analyzer = GeminiAnalyzer()
+    vectorizer = AlgorithmicVectorizer()
+
+    # Create registry with both analyzers
+    registry = FunctionRegistry(vectorizer=vectorizer, semantic_analyzer=semantic_analyzer)
     
     # Register a variety of functions with different algorithmic properties
     registry.register(add)
@@ -106,6 +149,17 @@ st.title("Algorithmic Function Explorer")
 st.markdown("Discover, analyze, and understand functions through their algorithmic properties")
 
 # Sidebar menu
+# Initialize filter variables
+if 'selected_categories' not in st.session_state:
+    st.session_state.selected_categories = []
+if 'selected_complexity' not in st.session_state:
+    st.session_state.selected_complexity = []
+
+# Global variables for filters
+selected_categories = []
+selected_complexity = []
+
+# Your existing sidebar code
 with st.sidebar:
     st.title("Navigation")
     page = st.radio("Select page", [
@@ -113,7 +167,8 @@ with st.sidebar:
         "Algorithmic Search", 
         "Algorithm Comparison", 
         "Function Execution",
-        "Pattern Explorer"
+        "Pattern Explorer",
+        "Function Generator"
     ])
     
     st.markdown("---")
@@ -131,17 +186,24 @@ with st.sidebar:
                 for pattern in analysis["algorithm_patterns"]:
                     all_categories.add(pattern["category"])
     
+    # Always define selected_categories, even if all_categories is empty
     if all_categories:
-        selected_categories = st.multiselect("By Algorithm Category", list(all_categories))
+        selected_categories = st.multiselect("By Algorithm Category", list(all_categories), 
+                                            default=st.session_state.selected_categories)
+        st.session_state.selected_categories = selected_categories
     
     # Complexity filter
     complexity_options = [
         "O(1)", "O(log n)", "O(n)", "O(n log n)", "O(n²)", "O(2^n)"
     ]
-    selected_complexity = st.multiselect("By Time Complexity", complexity_options)
+    selected_complexity = st.multiselect("By Time Complexity", complexity_options,
+                                        default=st.session_state.selected_complexity)
+    st.session_state.selected_complexity = selected_complexity
     
     # Reset filters button
     if st.button("Reset Filters"):
+        st.session_state.selected_categories = []
+        st.session_state.selected_complexity = []
         selected_categories = []
         selected_complexity = []
 
@@ -155,8 +217,8 @@ with st.sidebar:
     )
 
 # Apply filters to function list
-def filter_functions(functions):
-    if not (selected_categories or selected_complexity):
+def filter_functions(functions, categories, complexity):
+    if not (categories or complexity):
         return functions
         
     filtered = []
@@ -168,28 +230,28 @@ def filter_functions(functions):
             analysis = metadata["algorithmic_analysis"]
             
             # Filter by category
-            if selected_categories:
+            if categories:
                 category_match = False
                 if "algorithm_patterns" in analysis:
                     for pattern in analysis["algorithm_patterns"]:
-                        if pattern["category"] in selected_categories:
+                        if pattern["category"] in categories:
                             category_match = True
                             break
                 if not category_match:
                     include = False
             
             # Filter by complexity
-            if selected_complexity and include:
+            if complexity and include:
                 complexity_match = False
                 if "complexity" in analysis:
                     time_complexity = analysis["complexity"]["time_complexity"]
-                    if time_complexity in selected_complexity:
+                    if time_complexity in complexity:
                         complexity_match = True
                 if not complexity_match:
                     include = False
         else:
             # If no analysis available, exclude if any filters are active
-            if selected_categories or selected_complexity:
+            if categories or complexity:
                 include = False
                 
         if include:
@@ -308,7 +370,8 @@ if page == "Function Overview":
     st.header("Function Catalog")
     
     # Get filtered functions
-    func_names = filter_functions(registry.list_functions())
+    # For example, in the "Function Overview" page
+    func_names = filter_functions(registry.list_functions(), selected_categories, selected_complexity)
     
     if not func_names:
         st.warning("No functions match the selected filters")
@@ -337,53 +400,94 @@ if page == "Function Overview":
             else:
                 uncategorized.append(func_name)
                 
+        
         # Display functions by category
         for category, funcs in categories.items():
             with st.expander(f"{category.replace('_', ' ').title()} ({len(funcs)} functions)"):
-                for func_name in funcs:
+                for i, func_name in enumerate(funcs):
                     metadata = registry.get_metadata(func_name)
-                    with st.expander(f"{func_name}{metadata['signature']}"):
-                        st.markdown(f"**Description:** {metadata['docstring']}")
+                    
+                    # Instead of nested expanders, use a divider and header
+                    if i > 0:
+                        st.markdown("---")  # Divider between functions
+                    
+                    # Function header with styling
+                    st.markdown(f"### {func_name}{metadata['signature']}")
+                    st.markdown(f"**Description:** {metadata['docstring']}")
+                    
+                    # Show complexity if available
+                    if "algorithmic_analysis" in metadata and "complexity" in metadata["algorithmic_analysis"]:
+                        time_complexity = metadata["algorithmic_analysis"]["complexity"]["time_complexity"]
+                        st.markdown(f"**Time Complexity:** {time_complexity}")
+                    
+                    # Tabs for different views - these are allowed inside expanders
+                    tab1, tab2, tab3, tab4 = st.tabs(["Source Code", "Algorithm Analysis", "Execution Stats", "Semantic Analysis"])
+                    
+                    with tab1:
+                        display_source_code(registry.functions[func_name])
                         
-                        # Show complexity if available
-                        if "algorithmic_analysis" in metadata and "complexity" in metadata["algorithmic_analysis"]:
-                            time_complexity = metadata["algorithmic_analysis"]["complexity"]["time_complexity"]
-                            st.markdown(f"**Time Complexity:** {time_complexity}")
+                    with tab2:
+                        render_algorithm_analysis(metadata)
                         
-                        # Tabs for different views
-                        tab1, tab2, tab3 = st.tabs(["Source Code", "Algorithm Analysis", "Execution Stats"])
-                        
-                        with tab1:
-                            display_source_code(registry.functions[func_name])
+                    with tab3:
+                        stats = registry.get_stats(func_name)
+                        st.markdown(f"**Called:** {stats['calls']} times")
+                        st.markdown(f"**Success Rate:** {(stats['success'] / max(1, stats['calls'])) * 100:.1f}%")
+                        st.markdown(f"**Average Execution Time:** {stats['avg_time']:.6f} seconds")
+
+                    with tab4:
+                        if func_name in registry.semantic_data:
+                            semantic = registry.semantic_data[func_name]
                             
-                        with tab2:
-                            render_algorithm_analysis(metadata)
+                            # Show semantic purpose
+                            st.subheader("Semantic Purpose")
+                            st.write(semantic.get("semantic_purpose", "No semantic purpose available"))
                             
-                        with tab3:
-                            stats = registry.get_stats(func_name)
-                            st.markdown(f"**Called:** {stats['calls']} times")
-                            st.markdown(f"**Success Rate:** {(stats['success'] / max(1, stats['calls'])) * 100:.1f}%")
-                            st.markdown(f"**Average Execution Time:** {stats['avg_time']:.6f} seconds")
-        
+                            # Show use cases
+                            if "use_cases" in semantic and semantic["use_cases"]:
+                                st.subheader("Use Cases")
+                                for case in semantic["use_cases"]:
+                                    st.markdown(f"- {case}")
+                            
+                            # Show limitations
+                            if "limitations" in semantic and semantic["limitations"]:
+                                st.subheader("Limitations")
+                                for limitation in semantic["limitations"]:
+                                    st.markdown(f"- {limitation}")
+                            
+                            # Show related concepts
+                            if "related_concepts" in semantic and semantic["related_concepts"]:
+                                st.subheader("Related Concepts")
+                                for concept in semantic["related_concepts"]:
+                                    st.markdown(f"- {concept}")
+                        else:
+                            st.info("No semantic analysis available for this function")
+                                    
         # Display uncategorized functions
         if uncategorized:
             with st.expander(f"Other Functions ({len(uncategorized)})"):
-                for func_name in uncategorized:
+                for i, func_name in enumerate(uncategorized):
                     metadata = registry.get_metadata(func_name)
-                    with st.expander(f"{func_name}{metadata['signature']}"):
-                        st.markdown(f"**Description:** {metadata['docstring']}")
+                    
+                    # Instead of nested expanders, use dividers and headers
+                    if i > 0:
+                        st.markdown("---")  # Divider between functions
+                    
+                    # Function header with styling
+                    st.markdown(f"### {func_name}{metadata['signature']}")
+                    st.markdown(f"**Description:** {metadata['docstring']}")
+                    
+                    # Tabs for different views
+                    tab1, tab2 = st.tabs(["Source Code", "Execution Stats"])
+                    
+                    with tab1:
+                        display_source_code(registry.functions[func_name])
                         
-                        # Tabs for different views
-                        tab1, tab2 = st.tabs(["Source Code", "Execution Stats"])
-                        
-                        with tab1:
-                            display_source_code(registry.functions[func_name])
-                            
-                        with tab2:
-                            stats = registry.get_stats(func_name)
-                            st.markdown(f"**Called:** {stats['calls']} times")
-                            st.markdown(f"**Success Rate:** {(stats['success'] / max(1, stats['calls'])) * 100:.1f}%")
-                            st.markdown(f"**Average Execution Time:** {stats['avg_time']:.6f} seconds")
+                    with tab2:
+                        stats = registry.get_stats(func_name)
+                        st.markdown(f"**Called:** {stats['calls']} times")
+                        st.markdown(f"**Success Rate:** {(stats['success'] / max(1, stats['calls'])) * 100:.1f}%")
+                        st.markdown(f"**Average Execution Time:** {stats['avg_time']:.6f} seconds")
 
 elif page == "Algorithmic Search":
     st.header("Algorithmic Search")
@@ -398,8 +502,22 @@ elif page == "Algorithmic Search":
     
     if search_method == "Natural Language":
         query = st.text_input("What algorithm or function do you need?", placeholder="E.g., sort a list efficiently or find the shortest path")
-        
+
+        # Add option for advanced semantic search
+        use_advanced_search = st.checkbox("Use advanced semantic search powered by Gemini", value=True)
+
         if query:
+            with st.spinner("Searching..."):
+                # Use appropriate search method
+                if use_advanced_search and registry.semantic_analyzer and registry.semantic_analyzer.model:
+                    results = registry.advanced_semantic_search(query, top_k=10)
+                    if results:
+                        st.success(f"Found {len(results)} relevant functions using advanced semantic search")
+                else:
+                    results = registry.semantic_search(query, top_k=10)
+                    if results:
+                        st.success(f"Found {len(results)} relevant functions")
+                                    
             results = registry.semantic_search(query, top_k=10)
             
             if results:
@@ -1046,3 +1164,112 @@ elif page == "Pattern Explorer":
         """
         
         st.code(example_code, language="python")
+
+# Add this where your other page conditionals are
+elif page == "Function Generator":
+    st.header("Function Generator")
+    st.write("Create new functions based on natural language descriptions")
+    
+    # Function description input
+    description = st.text_area("Describe the function you need", 
+                              height=150,
+                              placeholder="E.g., A function that takes a list of dictionaries and sorts them based on a specified key")
+    
+    # Advanced options
+    with st.expander("Advanced Options"):
+        search_type = st.radio(
+            "Search Method",
+            ["Basic", "Advanced Semantic"],
+            horizontal=True
+        )
+        
+        # Show similar functions option
+        show_similar = st.checkbox("Show similar functions for inspiration", value=True)
+    
+    # Similar functions section
+    if description and show_similar:
+        with st.spinner("Finding similar functions..."):
+            if search_type == "Basic":
+                similar_funcs = registry.semantic_search(description, top_k=3)
+            else:
+                similar_funcs = registry.advanced_semantic_search(description, top_k=3)
+            
+            if similar_funcs:
+                st.subheader("Similar Existing Functions")
+                for result in similar_funcs:
+                    func_name = result["name"]
+                    metadata = result["metadata"]
+                    similarity = result["similarity"]
+                    
+                    with st.expander(f"{func_name} ({similarity:.2f} relevance)"):
+                        # Show basic info
+                        st.markdown(f"**Description:** {metadata['docstring']}")
+                        
+                        # Show semantic purpose if available
+                        if "semantic_purpose" in metadata:
+                            st.markdown(f"**Purpose:** {metadata['semantic_purpose']}")
+                        
+                        # Display the code
+                        st.code(inspect.getsource(registry.functions[func_name]), language="python")
+    
+    # Generation button
+    if st.button("Generate Function") and description:
+        with st.spinner("Generating function..."):
+            # Generate the function code
+            function_code = registry.generate_function(description)
+            
+            # Create or update the code artifact
+            st.subheader("Generated Function")
+            
+            # Display the generated code
+            st.code(function_code, language="python")
+            
+            # Create column layout for action buttons
+            col1, col2 = st.columns(2)
+            
+            # Add to registry option
+            with col1:
+                if st.button("Add to Registry"):
+                    try:
+                        # Execute the code to get the function
+                        locals_dict = {}
+                        exec(function_code, globals(), locals_dict)
+                        
+                        # Find the function in the locals
+                        func_name = None
+                        for name, obj in locals_dict.items():
+                            if callable(obj) and not name.startswith("__"):
+                                func_name = name
+                                break
+                        
+                        if func_name:
+                            # Register the function
+                            registry.register(locals_dict[func_name])
+                            st.success(f"Function '{func_name}' added to registry!")
+                        else:
+                            st.error("Could not find a function in the generated code")
+                    except Exception as e:
+                        st.error(f"Error adding function to registry: {str(e)}")
+            
+            # Download option
+            with col2:
+                if st.button("Download Function"):
+                    # Create download button
+                    try:
+                        # Extract function name from code
+                        import re
+                        match = re.search(r"def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(", function_code)
+                        if match:
+                            func_name = match.group(1)
+                            file_name = f"{func_name}.py"
+                        else:
+                            file_name = "generated_function.py"
+                            
+                        st.download_button(
+                            label="Download Python File",
+                            data=function_code,
+                            file_name=file_name,
+                            mime="text/plain"
+                        )
+                    except Exception as e:
+                        st.error(f"Error preparing download: {str(e)}")

@@ -1,10 +1,13 @@
+#app.py
 import streamlit as st
 from src.core.registry import FunctionRegistry
+from example_functions import *
 
 # Initialize the registry
 registry = FunctionRegistry()
 
-# Register example functions
+# Either use decorators OR register with a loop, not both
+# Option 1: Use decorators (remove the loop)
 @registry.register
 def add(a, b):
     """Add two numbers together."""
@@ -20,12 +23,24 @@ def greet(name):
     """Greet a person by name."""
     return f"Hello, {name}!"
 
+# Register additional functions
+registry.register(subtract)
+registry.register(divide)
+registry.register(count_words)
+registry.register(is_palindrome)
+registry.register(capitalize_words)
+registry.register(fetch_webpage)
+registry.register(send_email)
+registry.register(calculate_average)
+
+
 # Streamlit App
 st.title("Function Registry Dashboard")
 
 # Sidebar menu
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Select page", ["Functions", "Search", "Execute"])
+page = st.sidebar.radio("Select page", ["Functions", "Search", "Semantic Search", "Execute"])
+
 
 if page == "Functions":
     st.header("Registered Functions")
@@ -93,6 +108,30 @@ elif page == "Execute":
                 })
             else:
                 st.error(f"Error: {result['error']}")
+
+elif page == "Semantic Search":
+    st.header("Semantic Function Search")
+    st.write("Find functions based on their meaning, not just keywords")
+    
+    query = st.text_input("What are you trying to do?")
+    
+    if query:
+        results = registry.semantic_search(query)
+        if results:
+            st.success(f"Found {len(results)} semantically related functions")
+            for result in results:
+                func_name = result["name"]
+                similarity = result["similarity"]
+                metadata = result["metadata"]
+                
+                st.subheader(f"{func_name}{metadata['signature']}")
+                st.write(metadata['docstring'])
+                st.progress(similarity)  # Show similarity as a progress bar
+                st.text(f"Similarity: {similarity:.2f}")
+                st.markdown("---")
+        else:
+            st.warning("No functions found matching your query")
+
 
 # Display app info in the sidebar
 st.sidebar.markdown("---")

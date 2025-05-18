@@ -1,7 +1,10 @@
+#registry.py
 import inspect
 import time
 from typing import Dict, Any, Callable, List, Optional
 import logging
+import numpy as np
+from src.core.vectorizer import FunctionVectorizer
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, 
@@ -11,11 +14,16 @@ logger = logging.getLogger("function_registry")
 class FunctionRegistry:
     """Registry for storing and executing functions with metadata tracking."""
     
-    def __init__(self):
+    def __init__(self, vectorizer=None):
         """Initialize an empty function registry."""
         self.functions = {}  # Store actual function objects
         self.metadata = {}   # Store function metadata
         self.stats = {}      # Store execution statistics
+        self.vectors = {}    # Store function vector embeddings
+        
+        # Initialize vectorizer
+        self.vectorizer = vectorizer or FunctionVectorizer()
+        
         logger.info("Function registry initialized")
     
     def register(self, func: Callable) -> str:
@@ -40,7 +48,13 @@ class FunctionRegistry:
             "module": func.__module__,
             "registered_at": time.time()
         }
-        
+
+        try:
+            vector = self.vectorizer.vectorize_function(func)
+            self.vectors[func_name] = vector
+        except Exception as e:
+            logger.warning(f"Failed to vectorize function {func_name}: {str(e)}")
+                    
         # Initialize statistics
         self.stats[func_name] = {
             "calls": 0,
@@ -158,6 +172,48 @@ class FunctionRegistry:
         """
         return list(self.functions.keys())
 
+    def semantic_search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Search for functions semantically similar to a natural language query.
+        
+        Args:
+            query: Natural language query
+            top_k: Number of top results to return
+            
+        Returns:
+            List of dictionaries containing matching function info with similarity scores
+        """
+        if not self.vectors:
+            logger.warning("No function vectors available. Using keyword search instead.")
+            return [{"name": name, "similarity": 1.0} for name in self.search(query)]
+        
+        try:
+            # Vectorize the query
+            query_vector = self.vectorizer.vectorize_query(query)
+            
+            # Calculate similarity with all function vectors
+            similarities = []
+            for func_name, vector in self.vectors.items():
+                similarity = self.vectorizer.calculate_similarity(query_vector, vector)
+                similarities.append((func_name, similarity))
+            
+            # Sort by similarity (highest first)
+            similarities.sort(key=lambda x: x[1], reverse=True)
+            
+            # Return top k results with metadata
+            results = []
+            for func_name, similarity in similarities[:top_k]:
+                results.append({
+                    "name": func_name,
+                    "similarity": similarity,
+                    "metadata": self.metadata[func_name]
+                })
+            
+            return results
+        
+        except Exception as e:
+            logger.error(f"Error in semantic search: {str(e)}")
+            return []
 
 # Decorator for easy registration
 def register_function(registry):
@@ -174,3 +230,4 @@ def register_function(registry):
         registry.register(func)
         return func
     return decorator
+

@@ -1,3 +1,4 @@
+# src/core/semantic_analyzer.py
 import os
 import inspect
 import json
@@ -13,29 +14,66 @@ logger = logging.getLogger("semantic_analyzer")
 # Load environment variables
 load_dotenv()
 
+def initialize_gemini():
+    """Initialize Gemini with API key from environment variables."""
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GOOGLE_API_KEY not found in environment variables")
+    try:
+        genai.configure(api_key=api_key)
+        logger.info("Gemini API initialized successfully")
+        return True
+    except Exception as e:
+        raise RuntimeError(f"Error configuring Gemini API: {str(e)}")
+    
 class GeminiAnalyzer:
     """Uses Gemini API to generate semantic analysis of functions."""
     
-    def __init__(self, api_key=None):
-        # Use provided API key or get from environment
-        api_key = api_key or os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            logger.warning("No Gemini API key found. Semantic analysis will be unavailable.")
-            self.model = None
-            return
-            
+    def __init__(self):
+        """Initialize the Gemini analyzer."""
         try:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-pro')
-            logger.info("Gemini analyzer initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize Gemini API: {str(e)}")
+            # Initialize the Gemini API
+            initialize_gemini()
+            
+            # Use the specific model name provided
+            model_name = "gemini-2.5-flash-preview-04-17"
+            logger.info(f"Using Gemini model: {model_name}")
+            
+            try:
+                self.model = genai.GenerativeModel(model_name)
+                self.available = True
+            except Exception as e:
+                logger.error(f"Error creating model instance with {model_name}: {str(e)}")
+                # Fallback to trying other models if this one fails
+                fallback_models = [
+                    "gemini-1.5-pro",
+                    "gemini-1.0-pro",
+                    "gemini-pro"
+                ]
+                
+                for fallback in fallback_models:
+                    try:
+                        logger.info(f"Trying fallback model: {fallback}")
+                        self.model = genai.GenerativeModel(fallback)
+                        self.available = True
+                        logger.info(f"Successfully connected to fallback model: {fallback}")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Could not use fallback model {fallback}: {str(e)}")
+                else:
+                    # If all fallbacks fail
+                    self.model = None
+                    self.available = False
+                    logger.error("All Gemini models failed to initialize")
+        except (ValueError, RuntimeError) as e:
+            logger.error(f"Gemini initialization failed: {str(e)}")
             self.model = None
+            self.available = False
     
     def analyze_function(self, func):
         """Generate semantic description and usage scenarios for a function."""
-        if not self.model:
-            logger.warning("Gemini model not initialized. Cannot analyze function.")
+        if not self.available:
+            logger.warning("Semantic analysis unavailable - Gemini API not initialized")
             return self._default_analysis(func)
             
         try:
@@ -74,8 +112,8 @@ class GeminiAnalyzer:
                 result = json.loads(text)
                 logger.info(f"Successfully analyzed function {function_name}")
                 return result
-            except json.JSONDecodeError:
-                logger.warning(f"Could not parse JSON from response: {response.text}")
+            except json.JSONDecodeError as e:
+                logger.warning(f"Could not parse JSON from response: {str(e)}")
                 return self._extract_fields_from_text(response.text, func)
                 
         except Exception as e:
@@ -124,9 +162,9 @@ class GeminiAnalyzer:
     
     def generate_function(self, description, components=None):
         """Generate a new function based on the description."""
-        if not self.model:
-            logger.warning("Gemini model not initialized. Cannot generate function.")
-            return "# Function generation requires Gemini API key"
+        if not self.available:
+            logger.warning("Function generation unavailable - Gemini API not initialized")
+            return "# Function generation requires Gemini API key (GOOGLE_API_KEY)"
             
         try:
             # Prepare prompt

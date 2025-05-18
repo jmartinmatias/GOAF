@@ -1,34 +1,17 @@
-# Fix for PyTorch compatibility with Streamlit hot-reload
+# app.py
+import os
 import sys
-import types
 
-# Create a dummy module to handle PyTorch's custom classes
-class DummyModule(types.ModuleType):
-    def __init__(self, name):
-        super().__init__(name)
-        self.__path__ = []  # Make this look like a package
-    
-    @property
-    def _path(self):
-        return []  # Return empty list instead of raising an error
+# Add the current directory to path if needed
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Only patch if torch is being used
 try:
-    import torch
-    if not isinstance(sys.modules.get('torch._classes'), DummyModule):
-        # Create and register our dummy module for torch._classes
-        dummy_module = DummyModule('torch._classes')
-        sys.modules['torch._classes'] = dummy_module
-        # Also set up the path property that Streamlit tries to access
-        class DummyPath:
-            @property
-            def _path(self):
-                return []
-        dummy_module.__path__ = DummyPath()
-except ImportError:
-    pass  # Torch not installed, nothing to patch
+    import streamlit_torch_fix
+    streamlit_torch_fix.apply_fix()
+except Exception as e:
+    print(f"Note: Could not apply PyTorch fix: {e}")
 
-#app.py
+# Now continue with your regular imports
 import streamlit as st
 import inspect
 import numpy as np

@@ -39,6 +39,15 @@ class FunctionRegistry:
         func_name = func.__name__
         self.functions[func_name] = func
         
+        # Get enhanced vector analysis
+        vector_data = self.vectorizer.vectorize_function(func)
+        self.vectors[func_name] = vector_data["vector"]
+
+        # Store the algorithmic analysis
+        self.metadata[func_name]["algorithmic_analysis"] = vector_data["algorithmic_analysis"]
+        self.metadata[func_name]["algorithmic_description"] = vector_data["algorithmic_description"]
+
+
         # Extract basic metadata
         self.metadata[func_name] = {
             "name": func_name,
